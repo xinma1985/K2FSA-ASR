@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId "com.k2fsa.sherpa.onnx"
-        minSdk 21
+        minSdk 29
         targetSdk 34
         versionCode 20251022
         versionName "1.12.15"
@@ -27,6 +27,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        viewBinding true
     }
 }
 

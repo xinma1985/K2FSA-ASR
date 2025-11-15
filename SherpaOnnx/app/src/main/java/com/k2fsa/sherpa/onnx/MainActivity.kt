@@ -6,46 +6,37 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
-import android.text.method.ScrollingMovementMethod
-import android.util.Log
-import android.widget.Button
-import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import android.text.TextUtils
+import android.widget.ImageView
 import androidx.core.app.ActivityCompat
-import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.k2fsa.sherpa.onnx.databinding.ActivityMainBinding
 import kotlin.concurrent.thread
 
-private const val TAG = "sherpa-onnx"
 private const val REQUEST_RECORD_AUDIO_PERMISSION = 200
 
-// To enable microphone in android emulator, use
-//
-// adb emu avd hostmicon
-
-class MainActivity : AppCompatActivity() {
+class MainActivity : BaseActivity() {
     private val permissions: Array<String> = arrayOf(Manifest.permission.RECORD_AUDIO)
 
     private lateinit var recognizer: OnlineRecognizer
     private var audioRecord: AudioRecord? = null
-    private lateinit var recordButton: Button
-    private lateinit var textView: TextView
     private var recordingThread: Thread? = null
 
     private val audioSource = MediaRecorder.AudioSource.MIC
     private val sampleRateInHz = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
 
-    // Note: We don't use AudioFormat.ENCODING_PCM_FLOAT
-    // since the AudioRecord.read(float[]) needs API level >= 23
-    // but we are targeting API level >= 21
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private var idx: Int = 0
-    private var lastText: String = ""
 
     @Volatile
     private var isRecording: Boolean = false
+    private lateinit var messageList: RecyclerView
+    private lateinit var dialImage: ImageView
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var messageAdapter: MessageAdapter
+    private var currentMessage = ""
+    private var isNewLine = true
 
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<String>, grantResults: IntArray
@@ -58,61 +49,63 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!permissionToRecordAccepted) {
-            Log.e(TAG, "Audio record is disallowed")
             finish()
         }
-
-        Log.i(TAG, "Audio record is permitted")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        initViews()
         ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION)
-
-        Log.i(TAG, "Start to initialize model")
         initModel()
-        Log.i(TAG, "Finished initializing model")
-
-        recordButton = findViewById(R.id.record_button)
-        recordButton.setOnClickListener { onclick() }
-
-        textView = findViewById(R.id.my_text)
-        textView.movementMethod = ScrollingMovementMethod()
     }
 
-    private fun onclick() {
+    override fun onDestroy() {
+        super.onDestroy()
+        reset()
+    }
+
+    private fun initViews() {
+        messageList = binding.listMessages
+        dialImage = binding.btnDial
+        dialImage.setOnClickListener { dial() }
+        messageList = binding.listMessages
+        val layoutManager = LinearLayoutManager(this)
+        messageList.layoutManager = layoutManager
+        messageAdapter = MessageAdapter(applicationContext)
+        messageList.adapter = messageAdapter
+    }
+
+    private fun dial() {
         if (!isRecording) {
             val ret = initMicrophone()
             if (!ret) {
-                Log.e(TAG, "Failed to initialize microphone")
                 return
             }
-            Log.i(TAG, "state: ${audioRecord?.state}")
+            isNewLine = true
+            currentMessage = ""
             audioRecord!!.startRecording()
-            recordButton.setText(R.string.stop)
             isRecording = true
-            textView.text = ""
-            lastText = ""
-            idx = 0
-
             recordingThread = thread(true) {
                 processSamples()
             }
-            Log.i(TAG, "Started recording")
+            dialImage.setImageResource(R.mipmap.hangup)
         } else {
-            isRecording = false
-            audioRecord!!.stop()
-            audioRecord!!.release()
-            audioRecord = null
-            recordButton.setText(R.string.start)
-            Log.i(TAG, "Stopped recording")
+            dialImage.setImageResource(R.mipmap.dial)
+            reset()
         }
     }
 
+    private fun reset() {
+        isRecording = false
+        audioRecord!!.stop()
+        audioRecord!!.release()
+        audioRecord = null
+    }
+
     private fun processSamples() {
-        Log.i(TAG, "processing samples")
         val stream = recognizer.createStream()
 
         val interval = 0.1 // i.e., 100 ms
@@ -142,33 +135,40 @@ class MainActivity : AppCompatActivity() {
                     }
                     text = recognizer.getResult(stream).text
                 }
-
-                var textToDisplay = lastText
-
-                if (text.isNotBlank()) {
-                    textToDisplay = if (lastText.isBlank()) {
-                        "${idx}: $text"
-                    } else {
-                        "${lastText}\n${idx}: $text"
-                    }
-                }
-
                 if (isEndpoint) {
                     recognizer.reset(stream)
-                    if (text.isNotBlank()) {
-                        lastText = "${lastText}\n${idx}: $text"
-                        textToDisplay = lastText
-                        idx += 1
+                    runOnUiThread {
+                        if (text.isNotEmpty()) {
+                            if (currentMessage != text) {
+                                currentMessage = text
+                                messageAdapter.replaceLatestItem(currentMessage)
+                            }
+                        }
+                        isNewLine = true
+                        currentMessage = ""
                     }
-                }
-
-                runOnUiThread {
-                    textView.text = textToDisplay
+                } else {
+                    runOnUiThread {
+                        if (text.isNotEmpty()) {
+                            if (isNewLine) {
+                                currentMessage = text
+                                messageAdapter.addNewItem(currentMessage)
+                                messageList.smoothScrollToPosition(messageAdapter.itemCount - 1)
+                            } else {
+                                if (currentMessage != text) {
+                                    currentMessage = text
+                                    messageAdapter.replaceLatestItem(currentMessage)
+                                }
+                            }
+                            isNewLine = false
+                        }
+                    }
                 }
             }
         }
         stream.release()
     }
+
 
     private fun initMicrophone(): Boolean {
         if (ActivityCompat.checkSelfPermission(
@@ -180,9 +180,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         val numBytes = AudioRecord.getMinBufferSize(sampleRateInHz, channelConfig, audioFormat)
-        Log.i(
-            TAG, "buffer size in milliseconds: ${numBytes * 1000.0f / sampleRateInHz}"
-        )
 
         audioRecord = AudioRecord(
             audioSource,
@@ -199,11 +196,11 @@ class MainActivity : AppCompatActivity() {
         // See https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
         // for a list of available models
         val type = 0
-        var ruleFsts : String?
+        var ruleFsts: String?
         ruleFsts = null
 
         val useHr = false
-        val hr =  HomophoneReplacerConfig(
+        val hr = HomophoneReplacerConfig(
             // Used only when useHr is true
             // Please download the following 3 files from
             // https://github.com/k2-fsa/sherpa-onnx/releases/tag/hr-files
@@ -215,7 +212,6 @@ class MainActivity : AppCompatActivity() {
             ruleFsts = "replace.fst",
         )
 
-        Log.i(TAG, "Select model type $type")
         var config = OnlineRecognizerConfig(
             featConfig = getFeatureConfig(sampleRate = sampleRateInHz, featureDim = 80),
             modelConfig = getModelConfig(type = type)!!,
